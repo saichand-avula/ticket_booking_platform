@@ -1,0 +1,5 @@
+ALTER TABLE tickets
+DROP CONSTRAINT IF EXISTS tickets_qr_code_key;
+
+ALTER TABLE tickets
+ALTER COLUMN qr_code TYPE TEXT;
