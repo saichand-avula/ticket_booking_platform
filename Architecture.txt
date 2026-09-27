@@ -1,0 +1,1430 @@
+I am building a high-concurrency ticket booking system.
+
+I want you to implement the architecture described below EXACTLY as the core design.
+
+Do NOT replace this architecture with a completely different seat-booking architecture. If you identify a critical correctness issue, explain it first and then make the smallest necessary change while preserving the fundamental architecture.
+
+IMPORTANT:
+- Assume Redis is always available.
+- Do NOT implement Redis crash recovery.
+- Do NOT implement durable PostgreSQL seat-hold records as a backup for Redis.
+- Do NOT introduce a PostgreSQL HELD seat state.
+- The temporary HELD state exists in Redis.
+- PostgreSQL is responsible for durable/permanent booking state.
+- Redis is responsible for the high-frequency real-time seat inventory and temporary reservation layer.
+
+==================================================
+1. HIGH-LEVEL ARCHITECTURE
+==================================================
+
+The system has these major components:
+
+1. Frontend
+2. Backend/API servers
+3. Waiting Room
+4. Redis
+5. PostgreSQL
+6. Payment Gateway
+
+Responsibilities:
+
+FRONTEND:
+- Display event page
+- Display seat map
+- Display seat colors
+- Display selection timer
+- Display payment timer
+- Display payment status
+- Display booking/ticket information
+
+WAITING ROOM:
+- Only used when an event has extremely high traffic
+- Controls how many users enter the actual booking system
+- Provides backpressure/traffic shaping
+- Must NOT be mandatory for normal traffic
+
+REDIS:
+- Real-time operational seat inventory
+- Temporary seat holds
+- TTL/expiration
+- Atomic seat acquisition
+- High-concurrency coordination
+- Fast seat-map reads
+- Prevent users from acquiring seats that are already temporarily held or permanently booked
+- Stores BOOKED state as well so stale clients do not attempt to acquire already-booked seats
+
+POSTGRESQL:
+- Durable source of truth for permanent booking
+- Users
+- Events
+- Venues
+- Seats
+- Orders
+- Payments
+- Tickets
+- Final seat state
+- ACID transaction for final booking
+
+PAYMENT GATEWAY:
+- Handles actual payment
+- Backend must never keep a PostgreSQL transaction open while waiting for payment
+
+==================================================
+2. IMPORTANT STATE MODEL
+==================================================
+
+Redis maintains the real-time operational state of each seat.
+
+Redis states:
+
+AVAILABLE
+HELD:{holdId}
+FINALIZING:{holdId}
+BOOKED
+
+Example:
+
+seat:3:A10 -> AVAILABLE
+
+or:
+
+seat:3:A10 -> HELD:H123
+
+or:
+
+seat:3:A10 -> FINALIZING:H123
+
+or:
+
+seat:3:A10 -> BOOKED
+
+
+PostgreSQL maintains the durable seat state.
+
+PostgreSQL seat states:
+
+AVAILABLE
+BOOKED
+
+DO NOT create:
+
+status = HELD
+
+in the PostgreSQL seats table.
+
+Temporary HELD state exists only in Redis.
+
+Therefore:
+
+Redis:
+AVAILABLE -> HELD -> AVAILABLE
+                   \
+                    -> FINALIZING -> BOOKED
+
+PostgreSQL:
+AVAILABLE -> BOOKED
+
+
+==================================================
+3. INITIAL EVENT STATE
+==================================================
+
+Assume Event 3 has:
+
+A9  = AVAILABLE
+A10 = AVAILABLE
+A11 = AVAILABLE
+A12 = BOOKED
+
+PostgreSQL:
+
+A9  -> AVAILABLE
+A10 -> AVAILABLE
+A11 -> AVAILABLE
+A12 -> BOOKED
+
+Redis should contain the corresponding operational state:
+
+A9  -> AVAILABLE
+A10 -> AVAILABLE
+A11 -> AVAILABLE
+A12 -> BOOKED
+
+
+==================================================
+4. USER CLICKS "BOOK TICKETS"
+==================================================
+
+User is on:
+
+Event Page
+
+User clicks:
+
+Book Tickets
+
+Flow:
+
+EVENT PAGE
+    |
+    |-- Normal traffic --> SEAT SELECTION
+    |
+    |-- High traffic ----> WAITING ROOM
+                               |
+                               | User admitted
+                               v
+                         SEAT SELECTION
+
+
+The waiting room should be configurable.
+
+For example:
+
+if event traffic is below a threshold:
+
+    user goes directly to seat selection
+
+if event traffic is extremely high:
+
+    user enters waiting room
+
+The purpose is to prevent millions of users from hitting the booking infrastructure simultaneously.
+
+
+==================================================
+5. CREATE SEAT SELECTION SESSION
+==================================================
+
+When the user enters the seat selection page, create a unique selection session.
+
+Example:
+
+selection_session_id = S123
+user_id = USER_A
+event_id = 3
+expires_at = NOW() + 10 minutes
+
+Generate a unique hold ID for this selection:
+
+hold_id = H123
+
+The selection timer is:
+
+10 minutes
+
+The frontend displays the countdown.
+
+IMPORTANT:
+
+The frontend timer is only for display.
+
+The backend must enforce expiration using server-side timestamps.
+
+
+==================================================
+6. GET SEAT MAP
+==================================================
+
+When the seat-selection page loads:
+
+Frontend:
+
+GET /events/3/seats
+
+Backend should retrieve the current seat state primarily from Redis.
+
+Example Redis state:
+
+A9  -> AVAILABLE
+A10 -> AVAILABLE
+A11 -> AVAILABLE
+A12 -> BOOKED
+
+Return this to the frontend.
+
+Frontend can display:
+
+AVAILABLE:
+    white/green
+
+HELD_BY_CURRENT_USER:
+    blue
+
+HELD_BY_OTHER_USER:
+    grey
+
+BOOKED:
+    grey/dark
+
+The frontend must NOT be considered authoritative.
+
+The backend must revalidate the seat when the user actually attempts to select it.
+
+
+==================================================
+7. USER SELECTS A10
+==================================================
+
+User A clicks A10.
+
+Frontend may immediately display:
+
+A10 -> BLUE
+
+But this is only optimistic UI.
+
+Frontend sends:
+
+POST /booking-sessions/S123/seats/A10
+
+
+Backend must attempt to acquire the seat in Redis atomically.
+
+Use:
+
+SET seat:3:A10 HOLD:H123 NX EX 600
+
+Meaning:
+
+seat:3:A10
+    value = HOLD:H123
+    NX = only create if key/state allows acquisition
+    EX 600 = 10-minute TTL
+
+If the seat is AVAILABLE:
+
+Redis:
+
+A10 -> HELD:H123
+TTL = 600 seconds
+
+Return success.
+
+If the seat is already:
+
+HELD
+FINALIZING
+BOOKED
+
+then reject the request.
+
+Example:
+
+User B tries to acquire A10 while:
+
+A10 -> HELD:H123
+
+Redis atomic acquisition fails.
+
+Return:
+
+A10 is unavailable.
+
+DO NOT perform a PostgreSQL query for every seat selection.
+
+Redis is the high-frequency acquisition layer.
+
+
+==================================================
+8. USER SELECTS A11
+==================================================
+
+User A clicks A11.
+
+Backend performs the same atomic acquisition:
+
+SET seat:3:A11 HOLD:H123 NX EX 600
+
+Redis:
+
+A10 -> HELD:H123
+A11 -> HELD:H123
+
+Both seats belong to the same hold:
+
+H123
+
+The frontend shows:
+
+A10 -> BLUE
+A11 -> BLUE
+
+
+==================================================
+9. MULTIPLE SEAT SELECTION
+==================================================
+
+A user may select multiple seats.
+
+Example:
+
+A9
+A10
+A11
+
+The system must avoid partial acquisition.
+
+BAD:
+
+A9  -> acquired
+A10 -> acquired
+A11 -> failed
+
+while leaving A9 and A10 held.
+
+Instead, implement all-or-nothing acquisition.
+
+Preferred approaches:
+
+- Redis Lua script
+- Redis transaction/watch where appropriate
+- Another atomic Redis mechanism
+
+For example:
+
+REQUEST:
+User A wants A9, A10, A11
+
+Redis atomically verifies:
+
+A9  = AVAILABLE
+A10 = AVAILABLE
+A11 = AVAILABLE
+
+If all are available:
+
+A9  -> HELD:H123
+A10 -> HELD:H123
+A11 -> HELD:H123
+
+If any one is unavailable:
+
+NONE are acquired.
+
+Explain and implement the safest Redis-native approach.
+
+
+==================================================
+10. USER B HAS A STALE SEAT MAP
+==================================================
+
+Important race condition.
+
+Suppose User B loaded the seat map earlier:
+
+A10 -> AVAILABLE
+
+Then User A acquires A10:
+
+Redis:
+
+A10 -> HELD:H123
+
+User B's browser may still display:
+
+A10 -> AVAILABLE
+
+That is acceptable.
+
+When User B clicks A10:
+
+Backend checks Redis.
+
+Redis:
+
+A10 -> HELD:H123
+
+Therefore:
+
+REJECT
+
+User B cannot proceed with A10.
+
+The frontend's old seat map does not matter.
+
+Always validate at the moment of acquisition.
+
+
+==================================================
+11. SELECTION TIMER EXPIRES
+==================================================
+
+Selection timer:
+
+10 minutes
+
+Suppose User A selects:
+
+A10
+A11
+
+Redis:
+
+A10 -> HELD:H123
+A11 -> HELD:H123
+
+User A does NOT click Proceed to Payment.
+
+After 10 minutes:
+
+The Redis temporary holds expire.
+
+They should become AVAILABLE again.
+
+Redis:
+
+A10 -> AVAILABLE
+A11 -> AVAILABLE
+
+PostgreSQL remains unchanged:
+
+A10 -> AVAILABLE
+A11 -> AVAILABLE
+
+IMPORTANT:
+
+Do NOT perform:
+
+PostgreSQL:
+HELD -> AVAILABLE
+
+because PostgreSQL never contained HELD.
+
+After expiration:
+
+User A is returned to the Event Page.
+
+If they want to book again:
+
+Event Page
+    ->
+Book Tickets
+    ->
+Waiting Room if required
+    ->
+Seat Selection
+
+
+==================================================
+12. USER CLICKS "PROCEED TO PAYMENT"
+==================================================
+
+Before allowing checkout, backend MUST validate:
+
+1. Selection session is still valid
+2. Selection session has not expired
+3. holdId is valid
+4. Hold belongs to current user
+5. Every selected seat belongs to holdId
+6. Every Redis seat hold still exists
+7. Hold has not expired
+8. User is allowed to pay for this hold
+
+Example:
+
+holdId = H123
+
+Seats:
+
+A10 -> HELD:H123
+A11 -> HELD:H123
+
+If valid:
+
+Proceed to Payment.
+
+The 10-minute seat-selection timer ends.
+
+Start a NEW timer:
+
+Payment timer = 5 minutes.
+
+
+==================================================
+13. PAYMENT PAGE
+==================================================
+
+Payment page displays:
+
+5:00
+4:59
+4:58
+...
+
+The Redis holds remain active during payment.
+
+Redis:
+
+A10 -> HELD:H123
+A11 -> HELD:H123
+
+Other users cannot acquire them.
+
+
+==================================================
+14. PAYMENT PROCESS
+==================================================
+
+User clicks Pay.
+
+Backend calls the payment gateway.
+
+IMPORTANT:
+
+NEVER keep a PostgreSQL transaction open during payment.
+
+BAD:
+
+BEGIN
+    call payment gateway
+    wait 20 seconds
+COMMIT
+
+DO NOT DO THIS.
+
+Instead:
+
+Redis temporary hold
+        |
+        v
+Payment Gateway
+        |
+        v
+SUCCESS / FAILURE
+
+
+==================================================
+15. PAYMENT SUCCESS
+==================================================
+
+Suppose payment succeeds.
+
+Payment gateway returns something like:
+
+payment_status = SUCCESS
+order_id = O123
+hold_id = H123
+
+Before finalizing, verify:
+
+1. Payment is actually valid
+2. Payment belongs to order O123
+3. Hold H123 belongs to current user
+4. Hold H123 has not expired
+5. All requested seats still belong to H123
+6. The payment/order operation has not already been completed
+
+
+==================================================
+16. REDIS FINALIZATION STATE
+==================================================
+
+Before touching PostgreSQL, change the Redis state:
+
+A10 -> FINALIZING:H123
+A11 -> FINALIZING:H123
+
+This state prevents another user from acquiring the seats while PostgreSQL is finalizing the booking.
+
+The state is:
+
+HELD:H123
+      |
+      v
+FINALIZING:H123
+
+
+==================================================
+17. POSTGRESQL FINAL BOOKING
+==================================================
+
+Now perform a SHORT PostgreSQL transaction.
+
+Start:
+
+BEGIN;
+
+Lock the relevant seat rows:
+
+SELECT *
+FROM seats
+WHERE event_id = 3
+AND seat_id IN ('A10', 'A11')
+FOR UPDATE;
+
+
+Verify that the seats are still AVAILABLE.
+
+Then:
+
+UPDATE seats
+SET status = 'BOOKED',
+    version = version + 1
+WHERE event_id = 3
+AND seat_id IN ('A10', 'A11')
+AND status = 'AVAILABLE';
+
+
+Then create the order:
+
+INSERT INTO orders (...);
+
+
+Then create the booking-seat/order-item records:
+
+INSERT INTO booking_seats (...);
+
+
+Then create tickets:
+
+INSERT INTO tickets (...);
+
+
+Then update payment/order state:
+
+UPDATE orders
+SET status = 'CONFIRMED'
+WHERE order_id = 'O123';
+
+
+Then:
+
+COMMIT;
+
+
+IMPORTANT:
+
+The transaction must remain short.
+
+Never call the payment gateway while the transaction is open.
+
+
+==================================================
+18. POSTGRESQL AFTER SUCCESS
+==================================================
+
+PostgreSQL now contains:
+
+A10 -> BOOKED
+A11 -> BOOKED
+
+Order:
+
+O123 -> CONFIRMED
+
+Tickets:
+
+T001 -> A10
+T002 -> A11
+
+
+==================================================
+19. UPDATE REDIS AFTER POSTGRESQL COMMIT
+==================================================
+
+After the PostgreSQL transaction successfully commits:
+
+Redis becomes:
+
+A10 -> BOOKED
+A11 -> BOOKED
+
+DO NOT simply delete the Redis entries after successful booking.
+
+Keep:
+
+A10 -> BOOKED
+A11 -> BOOKED
+
+This is important because another user may have a stale seat map.
+
+If User B still sees:
+
+A10 -> AVAILABLE
+
+and clicks A10:
+
+Backend checks Redis:
+
+A10 -> BOOKED
+
+Reject immediately.
+
+No PostgreSQL query is necessary for the normal acquisition path.
+
+
+==================================================
+20. BOOKING SUCCESS RESPONSE
+==================================================
+
+Return something like:
+
+{
+    "success": true,
+    "orderId": "O123",
+    "status": "CONFIRMED",
+    "tickets": [
+        {
+            "ticketId": "T001",
+            "seat": "A10"
+        },
+        {
+            "ticketId": "T002",
+            "seat": "A11"
+        }
+    ]
+}
+
+
+Frontend displays:
+
+PAYMENT SUCCESSFUL
+
+Booking Confirmed
+
+Order: O123
+
+Seats:
+A10
+A11
+
+
+The user can then open:
+
+My Orders
+    ->
+O123
+    ->
+My Tickets
+
+and see the tickets for A10 and A11.
+
+
+==================================================
+21. PAYMENT FAILURE
+==================================================
+
+If payment fails:
+
+payment_status = FAILED
+
+Release the Redis temporary holds:
+
+A10 -> AVAILABLE
+A11 -> AVAILABLE
+
+PostgreSQL remains:
+
+A10 -> AVAILABLE
+A11 -> AVAILABLE
+
+No permanent seat booking was created.
+
+User returns to Event Page.
+
+If they want to try again:
+
+Book Tickets
+    ->
+Waiting Room if required
+    ->
+Seat Selection
+
+
+==================================================
+22. PAYMENT TIMEOUT
+==================================================
+
+Payment timer = 5 minutes.
+
+If the payment is not completed before the timer expires:
+
+Redis:
+
+A10 -> AVAILABLE
+A11 -> AVAILABLE
+
+PostgreSQL:
+
+A10 -> AVAILABLE
+A11 -> AVAILABLE
+
+No PostgreSQL seat update is required.
+
+Return user to Event Page.
+
+They must start a new booking flow if they want to try again.
+
+
+==================================================
+23. IMPORTANT LATE PAYMENT RACE CONDITION
+==================================================
+
+Handle this scenario carefully:
+
+User A:
+    holds A10
+        |
+        v
+starts payment
+        |
+        v
+hold expires
+        |
+        v
+A10 becomes AVAILABLE
+        |
+        v
+User B acquires A10
+        |
+        v
+User A's old payment response arrives
+
+User A MUST NOT be allowed to book A10.
+
+Use:
+
+holdId
+orderId
+paymentId
+
+and validate the hold/order before finalization.
+
+If:
+
+H123 has expired
+
+then:
+
+Payment SUCCESS
+    |
+    v
+DO NOT book H123 seats
+
+The old payment must be handled safely according to the payment gateway's refund/payment-reconciliation behavior.
+
+Never allow an expired hold to become a booking.
+
+
+==================================================
+24. PAYMENT IDEMPOTENCY
+==================================================
+
+Payment and booking APIs MUST be idempotent.
+
+Handle:
+
+- User clicks Pay twice
+- Payment gateway sends duplicate webhook
+- Backend receives duplicate payment response
+- Network timeout after payment succeeded
+- User retries payment
+- Payment callback arrives multiple times
+
+Example:
+
+order_id = O123
+
+If O123 is already:
+
+CONFIRMED
+
+then another success callback must NOT:
+
+- create another order
+- create another ticket
+- book the seats again
+
+The operation should simply return the existing successful booking.
+
+Use an idempotency key/order ID/payment ID and appropriate unique database constraints.
+
+
+==================================================
+25. POSTGRESQL SCHEMA
+==================================================
+
+Create appropriate tables for:
+
+users
+events
+venues
+seats
+orders
+booking_seats / order_items
+payments
+tickets
+
+Seats table should contain at least:
+
+id
+event_id
+seat_number
+status
+version
+created_at
+updated_at
+
+Seat status:
+
+AVAILABLE
+BOOKED
+
+Do NOT add HELD to PostgreSQL.
+
+Orders should have appropriate states such as:
+
+PENDING_PAYMENT
+CONFIRMED
+FAILED
+EXPIRED
+CANCELLED
+
+Payments should track:
+
+payment_id
+order_id
+provider_reference
+status
+amount
+timestamps
+
+Tickets should contain:
+
+ticket_id
+order_id
+event_id
+user_id
+seat_id
+QR/ticket identifier
+created_at
+
+Add:
+
+- Primary keys
+- Foreign keys
+- Unique constraints
+- Appropriate indexes
+- Unique constraint preventing duplicate booking of the same event/seat
+- Timestamps
+- Version where appropriate
+
+
+==================================================
+26. REDIS DATA MODEL
+==================================================
+
+Design Redis carefully.
+
+The logical state should be:
+
+seat:{eventId}:{seatId}
+
+Possible values:
+
+AVAILABLE
+HELD:{holdId}
+FINALIZING:{holdId}
+BOOKED
+
+For temporary holds:
+
+HELD:{holdId}
+
+must have a TTL.
+
+Example:
+
+seat:3:A10 -> HELD:H123
+TTL = 600 seconds
+
+
+For permanent BOOKED state:
+
+seat:3:A10 -> BOOKED
+
+No temporary TTL should remove BOOKED state.
+
+For seat map reads, use an efficient Redis data structure such as:
+
+- Redis Hash
+- Redis String keys
+- Sets
+- Another appropriate structure
+
+Do NOT perform thousands of individual Redis calls if the entire seat map can be retrieved efficiently in one/batched operation.
+
+Explain your chosen Redis data structure and why.
+
+
+==================================================
+27. REDIS ATOMICITY
+==================================================
+
+Seat acquisition MUST be atomic.
+
+Do NOT implement:
+
+GET seat
+if available
+SET seat
+
+because this has a race condition.
+
+Instead use:
+
+SET NX
+
+or a Lua script / Redis transaction where necessary.
+
+For multiple seats, prefer an atomic Lua script or another safe Redis mechanism so:
+
+ALL requested seats are acquired
+
+OR
+
+NONE are acquired.
+
+
+==================================================
+28. SEAT MAP STALENESS
+==================================================
+
+The frontend seat map is only a snapshot.
+
+Example:
+
+User B loads:
+
+A10 -> AVAILABLE
+
+Then User A acquires:
+
+A10 -> HELD:H123
+
+User B's screen may still show A10 as AVAILABLE.
+
+When B actually clicks A10:
+
+Backend checks Redis.
+
+Redis:
+
+A10 -> HELD:H123
+
+Reject.
+
+Similarly, after A permanently books A10:
+
+Redis:
+
+A10 -> BOOKED
+
+B may still visually see AVAILABLE.
+
+When B clicks:
+
+Redis says BOOKED.
+
+Reject.
+
+The backend must always validate seat acquisition.
+
+
+==================================================
+29. REAL-TIME SEAT MAP UPDATES
+=================================================
+ implement real-time updates using:
+
+WebSocket
+or
+Server-Sent Events (SSE)
+
+Example:
+
+User A selects A10
+
+Redis:
+A10 -> HELD:H123
+
+Backend publishes:
+
+SEAT_HELD
+
+Other connected clients receive:
+
+A10 -> unavailable
+
+Similarly:
+
+Payment success:
+
+A10 -> BOOKED
+
+Broadcast:
+
+SEAT_BOOKED
+
+
+The real-time channel is an optimization for UI freshness.
+
+It must NOT replace backend validation.
+
+
+==================================================
+30. WAITING ROOM ARCHITECTURE
+==================================================
+
+For normal traffic:
+
+User
+ |
+ v
+Seat Selection
+
+
+For extreme traffic:
+
+1,000,000 users
+ |
+ v
+Waiting Room
+ |
+ v
+Controlled admission
+ |
+ v
+Backend
+ |
+ v
+Redis
+ |
+ v
+PostgreSQL
+
+The waiting room should:
+
+- Limit concurrent users entering booking
+- Protect backend servers
+- Protect Redis
+- Protect PostgreSQL
+- Provide fair admission where possible
+- Prevent sudden traffic spikes from overwhelming the system
+
+Implement it as a configurable component.
+
+
+==================================================
+31. IMPORTANT PERFORMANCE PRINCIPLE
+==================================================
+
+Do NOT do:
+
+Every seat click
+    ->
+PostgreSQL
+
+That defeats the purpose of Redis.
+
+Instead:
+
+Seat map read
+    ->
+Redis
+
+Temporary seat acquisition
+    ->
+Redis atomic operation
+
+Temporary seat release
+    ->
+Redis
+
+Final booking
+    ->
+PostgreSQL transaction
+
+Orders
+    ->
+PostgreSQL
+
+Tickets
+    ->
+PostgreSQL
+
+
+==================================================
+32. COMPLETE FINAL FLOW
+==================================================
+
+Implement this exact flow:
+
+USER
+ |
+ | Click Book Tickets
+ v
+EVENT PAGE
+ |
+ |-- Normal traffic ----------------------+
+ |                                       |
+ |-- High traffic                        |
+        |                                |
+        v                                |
+WAITING ROOM                             |
+        |                                |
+        | User admitted                  |
+        +---------------+----------------+
+                        |
+                        v
+                 SEAT SELECTION
+                 Timer = 10 min
+                        |
+                        v
+                  GET SEAT MAP
+                        |
+                        v
+                      REDIS
+                        |
+                        v
+                   Seat States
+                        |
+                  Select A10
+                        |
+                        v
+               Redis atomic SET NX
+                        |
+                        v
+                 A10 -> HELD:H123
+                 TTL = 10 min
+                        |
+                  Select A11
+                        |
+                        v
+               A11 -> HELD:H123
+                 TTL = 10 min
+                        |
+              +---------+---------+
+              |                   |
+           TIMEOUT             PROCEED
+              |                   |
+              v                   v
+       Redis -> AVAILABLE    Validate H123
+                                  |
+                                  v
+                           PAYMENT PAGE
+                           Timer = 5 min
+                                  |
+                                  v
+                           PAYMENT GATEWAY
+                                  |
+                            PAYMENT SUCCESS
+                                  |
+                                  v
+                         Redis -> FINALIZING
+                                  |
+                                  v
+                           PostgreSQL TX
+                                  |
+                         +--------+--------+
+                         |                 |
+                    Lock seats        Verify
+                         |                 |
+                         +--------+--------+
+                                  |
+                                  v
+                         AVAILABLE -> BOOKED
+                                  |
+                                  v
+                            Create Order
+                                  |
+                                  v
+                           Create Tickets
+                                  |
+                                  v
+                               COMMIT
+                                  |
+                                  v
+                           Redis -> BOOKED
+                                  |
+                                  v
+websocket seats updated in frontend
+                                  |
+                                  v
+                         BOOKING CONFIRMED
+                                  |
+                                  v
+                          My Orders/Tickets
+
+
+==================================================
+33. FINAL ARCHITECTURE PRINCIPLE
+==================================================
+
+The most important design principle is:
+
+Redis handles:
+
+- High-frequency seat operations
+- Current operational seat state
+- Temporary holds
+- TTL
+- Atomic acquisition
+- Fast seat availability checks
+
+PostgreSQL handles:
+
+- Durable booking state
+- Orders
+- Payments
+- Tickets
+- Final seat ownership
+- ACID transaction
+
+Waiting Room handles:
+
+- Traffic spikes
+- Backpressure
+- Admission control
+
+Frontend handles:
+
+- UI
+- Timers
+- Seat colors
+- Real-time updates
+
+The frontend is never trusted for correctness.
+
+
+==================================================
+34. IMPORTANT IMPLEMENTATION REQUIREMENT
+==================================================
+
+Before writing any code:
+
+1. Explain the complete architecture you understood from this prompt.
+2. Draw the request/data flow.
+3. Explain the Redis state machine.
+4. Explain the PostgreSQL state machine.
+5. Explain the exact Redis data structures and keys.
+6. Explain the database schema.
+7. Explain the API flow.
+8. Explain concurrency handling.
+9. Explain how multiple seats are acquired atomically.
+10. Explain payment idempotency.
+11. Explain stale seat-map handling.
+12. Explain timeout handling.
+13. Explain the FINALIZING state.
+14. Identify any remaining correctness concerns.
+
+Then implement the system.
+
+Do not silently change the architecture.
+
+If you believe a change is necessary, explain:
+- what the problem is
+- why it occurs
+- the smallest change required
+- how that change affects the architecture
+
+Then proceed with implementation.

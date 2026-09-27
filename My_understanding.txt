@@ -1,0 +1,12 @@
+1.Note: Since the threshold can also be overridden per-event in Redis (via the waiting_room_config:{eventId} key), if you have previously set a custom threshold for a specific event in Redis, you might need to flush your redis cache or use a new event to see the DEFAULT_THRESHOLD take effect.
+
+2.lua script used for redis for complex opeartion or multiple opeartion at the same time
+
+3.mget used in redis for getting multiple values
+
+4.in redis 2 values
+    one is candidate:eventid - checking whether waiting room is valid by counting no of candidates enters for that event
+    seat:candidateid- this is for the seats selecting
+    
+5.when payment hits 5minutes time then automatically selection seat timer also hits 0 or else i can say more clear automatically 
+the in redis the selection seat data also removed with ttl.
