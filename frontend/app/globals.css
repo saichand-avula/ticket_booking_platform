@@ -1,0 +1,381 @@
+/* ============================================================
+   globals.css — Design System v2 (Light + Modern Theme)
+   
+   A fresh, premium design inspired by platforms like Luma,
+   Linear, and Vercel. Uses a light base with warm whites,
+   subtle gradients, and vibrant accent colors.
+   
+   PALETTE:
+     - Background: warm white (#fafafa → #f5f3ff)
+     - Surface: pure white cards with soft shadows
+     - Primary: vivid indigo (#6366f1)
+     - Accent: rose/coral (#f43f5e)
+     - Success: emerald (#10b981)
+     - Dark surface (navbar): deep slate (#1e1b4b)
+   ============================================================ */
+
+@import "tailwindcss";
+
+/* ============================================================
+   CSS CUSTOM PROPERTIES
+   Central place for all design tokens. Every component
+   references these instead of hard-coding colors.
+   ============================================================ */
+:root {
+  /* --- Backgrounds --- */
+  --bg-primary: #fafafa;           /* Page background */
+  --bg-secondary: #f1f0fb;         /* Section / card background alt */
+  --bg-surface: #ffffff;           /* Card surface */
+  --bg-surface-hover: #f8f7ff;     /* Card hover */
+  --bg-surface-active: #ede9fe;    /* Active / selected state */
+  --bg-navbar: #1e1b4b;           /* Dark navbar for contrast */
+
+  /* --- Brand Colors --- */
+  --color-primary: #6366f1;        /* Indigo — main CTA */
+  --color-primary-hover: #4f46e5;  /* Darker indigo on hover */
+  --color-primary-light: rgba(99, 102, 241, 0.08); /* Tinted backgrounds */
+  --color-primary-lighter: rgba(99, 102, 241, 0.15);
+  --color-accent: #f43f5e;         /* Rose — secondary highlight */
+  --color-accent-hover: #e11d48;
+  --color-success: #10b981;
+  --color-warning: #f59e0b;
+  --color-error: #ef4444;
+
+  /* --- Text --- */
+  --text-primary: #1e1b4b;         /* Near-black with warmth */
+  --text-secondary: #64748b;       /* Muted slate */
+  --text-muted: #94a3b8;           /* Even lighter */
+  --text-on-dark: #f1f5f9;         /* White text on dark bg */
+
+  /* --- Borders --- */
+  --border-color: #e2e8f0;
+  --border-color-hover: #cbd5e1;
+
+  /* --- Elevation (shadows) --- */
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.04);
+  --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.06);
+  --shadow-lg: 0 8px 30px rgba(0, 0, 0, 0.08);
+  --shadow-xl: 0 12px 40px rgba(0, 0, 0, 0.1);
+  --shadow-glow: 0 0 20px rgba(99, 102, 241, 0.15);
+
+  /* --- Fonts --- */
+  --font-sans: var(--font-geist-sans), system-ui, -apple-system, sans-serif;
+  --font-mono: var(--font-geist-mono), monospace;
+}
+
+/* Tailwind v4 theme registration */
+@theme inline {
+  --color-background: var(--bg-primary);
+  --color-foreground: var(--text-primary);
+  --font-sans: var(--font-geist-sans);
+  --font-mono: var(--font-geist-mono);
+}
+
+
+/* ============================================================
+   BASE STYLES
+   ============================================================ */
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+
+/* ============================================================
+   CARDS
+   White surfaces with soft shadow and rounded corners.
+   Hover lifts the card slightly for a tactile feel.
+   ============================================================ */
+.card {
+  background: var(--bg-surface);
+  border: 1px solid var(--border-color);
+  border-radius: 16px;
+  box-shadow: var(--shadow-md);
+  transition: transform 0.2s ease, box-shadow 0.2s ease, border-color 0.2s ease;
+}
+
+.card:hover {
+  transform: translateY(-2px);
+  box-shadow: var(--shadow-lg);
+  border-color: var(--border-color-hover);
+}
+
+
+/* ============================================================
+   BUTTONS
+   ============================================================ */
+
+/* Primary — gradient indigo-to-purple */
+.btn-primary {
+  background: linear-gradient(135deg, #6366f1, #8b5cf6);
+  color: white;
+  font-weight: 600;
+  padding: 12px 28px;
+  border-radius: 12px;
+  border: none;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  font-size: 0.95rem;
+  box-shadow: 0 2px 8px rgba(99, 102, 241, 0.3);
+}
+
+.btn-primary:hover {
+  background: linear-gradient(135deg, #4f46e5, #7c3aed);
+  transform: translateY(-1px);
+  box-shadow: 0 4px 16px rgba(99, 102, 241, 0.4);
+}
+
+.btn-primary:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  transform: none;
+  box-shadow: none;
+}
+
+/* Secondary — light bordered button */
+.btn-secondary {
+  background: var(--bg-surface);
+  color: var(--text-primary);
+  font-weight: 600;
+  padding: 12px 28px;
+  border-radius: 12px;
+  border: 1px solid var(--border-color);
+  cursor: pointer;
+  transition: all 0.2s ease;
+  font-size: 0.95rem;
+}
+
+.btn-secondary:hover {
+  border-color: var(--color-primary);
+  background: var(--color-primary-light);
+  color: var(--color-primary);
+}
+
+
+/* ============================================================
+   FORM INPUTS
+   ============================================================ */
+.input {
+  width: 100%;
+  padding: 12px 16px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-color);
+  border-radius: 10px;
+  color: var(--text-primary);
+  font-size: 0.95rem;
+  transition: border-color 0.2s ease, box-shadow 0.2s ease;
+  outline: none;
+}
+
+.input:focus {
+  border-color: var(--color-primary);
+  box-shadow: 0 0 0 3px var(--color-primary-light);
+}
+
+.input::placeholder {
+  color: var(--text-muted);
+}
+
+/* Dropdown selects inside light forms */
+select.input {
+  appearance: none;
+  background-image: url("data:image/svg+xml;charset=UTF-8,%3csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%2394a3b8' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3e%3cpolyline points='6 9 12 15 18 9'%3e%3c/polyline%3e%3c/svg%3e");
+  background-repeat: no-repeat;
+  background-position: right 12px center;
+  background-size: 16px;
+  padding-right: 40px;
+}
+
+
+/* ============================================================
+   LABELS
+   ============================================================ */
+.label {
+  display: block;
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--text-secondary);
+  margin-bottom: 6px;
+}
+
+
+/* ============================================================
+   MESSAGES (error / success)
+   ============================================================ */
+.error-message {
+  color: var(--color-error);
+  font-size: 0.85rem;
+  margin-top: 8px;
+  padding: 10px 14px;
+  background: #fef2f2;
+  border-radius: 10px;
+  border: 1px solid #fecaca;
+}
+
+.success-message {
+  color: #065f46;
+  font-size: 0.85rem;
+  margin-top: 8px;
+  padding: 10px 14px;
+  background: #ecfdf5;
+  border-radius: 10px;
+  border: 1px solid #a7f3d0;
+}
+
+
+/* ============================================================
+   STATUS BADGES
+   Colored pills for event statuses (draft, published, etc.)
+   ============================================================ */
+.badge {
+  display: inline-block;
+  padding: 4px 12px;
+  border-radius: 20px;
+  font-size: 0.75rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.badge-draft {
+  background: #f1f5f9;
+  color: #64748b;
+}
+
+.badge-published {
+  background: #ecfdf5;
+  color: #059669;
+}
+
+.badge-live {
+  background: #fff1f2;
+  color: #e11d48;
+  animation: pulse-badge 2s ease-in-out infinite;
+}
+
+.badge-sold-out {
+  background: #fffbeb;
+  color: #d97706;
+}
+
+.badge-closed {
+  background: #f1f5f9;
+  color: #94a3b8;
+}
+
+@keyframes pulse-badge {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.7; }
+}
+
+
+/* ============================================================
+   PAGE CONTAINER — centered max-width wrapper
+   ============================================================ */
+.page-container {
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 24px 20px;
+}
+
+
+/* ============================================================
+   GRADIENT TEXT — used for brand headings
+   ============================================================ */
+.gradient-text {
+  background: linear-gradient(135deg, #6366f1, #ec4899);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+
+/* ============================================================
+   LOADING SPINNER
+   ============================================================ */
+.spinner {
+  width: 24px;
+  height: 24px;
+  border: 3px solid var(--border-color);
+  border-top-color: var(--color-primary);
+  border-radius: 50%;
+  animation: spin 0.6s linear infinite;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+
+/* ============================================================
+   FADE IN ANIMATION — applied to page transitions
+   ============================================================ */
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(12px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.animate-fade-in {
+  animation: fadeIn 0.4s ease-out;
+}
+
+
+/* ============================================================
+   NAVBAR OVERRIDES
+   The navbar uses a dark surface for contrast against the 
+   light page. This makes it feel like a premium app header.
+   ============================================================ */
+/* Handled inline in Navbar.js for SSR safety */
+
+
+/* ============================================================
+   TABLE STYLES — for dashboard events table
+   ============================================================ */
+table {
+  border-collapse: collapse;
+}
+
+table th {
+  border-bottom: 2px solid var(--border-color);
+}
+
+table td {
+  border-bottom: 1px solid #f1f5f9;
+}
+
+table tr:last-child td {
+  border-bottom: none;
+}
+
+table tr:hover td {
+  background: var(--bg-surface-hover);
+}
+
+
+/* ============================================================
+   SCROLLBAR STYLING — subtle thin scrollbar
+   ============================================================ */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #cbd5e1;
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #94a3b8;
+}
